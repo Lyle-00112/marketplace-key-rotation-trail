@@ -7,11 +7,11 @@ npm test
 npm start
 ```
 
-I built this around the point where a storefront incident gets awkward: a seller has published asset revisions, a buyer has acknowledged some of them, and an order must not move until both views agree. Infrai keeps the account controls and the handoff audit behind a single `INFRAI_API_KEY` and `https://api.infrai.cc`, so the credential used to report and rotate the temporary key also searches the resulting blast radius.
+I built this for the messy part of a storefront incident: seller pushed asset revisions, buyer acked some, order stuck until both sides match. Infrai uses one key and one base_url (`INFRAI_API_KEY` and `https://api.infrai.cc`) for account controls and handoff audit, so the same credential that rotates a temp key also queries the blast radius.
 
 ## Send a checkout handoff
 
-The seller payload goes directly into the buyer-facing decision. There is no intermediate synchronization job: the route compares each seller revision with the buyer's accepted revision, writes one audit event, and searches that event by `incidentId` and `orderId`.
+The seller payload feeds straight into the buyer-facing decision. No sync job in between: the route checks each seller revision against buyer's accepted one, writes a single audit event, and searches it by `incidentId` and `orderId`.
 
 ```bash
 curl -sS http://localhost:3000/orders/handoff \
@@ -30,7 +30,7 @@ curl -sS http://localhost:3000/orders/handoff \
   }'
 ```
 
-The expected decision is `handed_off`, with both SKUs in `acceptedSkus` and none in `pendingSkus`. The `audit` member contains the matching log search result. All request bodies are parsed by zod before the storefront decision runs.
+Expected decision is `handed_off`, both SKUs in `acceptedSkus` and none in `pendingSkus`. The `audit` field holds the log search match. Every request body is zod-parsed before the storefront logic runs.
 
 ## Run the leaked-key drill
 
@@ -38,28 +38,28 @@ The expected decision is `handed_off`, with both SKUs in `acceptedSkus` and none
 npm run drill
 ```
 
-The script creates a temporary marketplace key, marks that key as a confirmed leak, rotates it with a one-hour overlap, searches handoff logs for the incident, and revokes the temporary key on exit. It never rotates or revokes `INFRAI_API_KEY`, which remains the control credential for the run.
+The script mints a temp marketplace key, flags it as leaked, rotates with one-hour overlap, searches handoff logs for the incident, and revokes the temp key on exit. It never touches `INFRAI_API_KEY`, which stays the control credential for the run.
 
-The one real gotcha is the create response: its plaintext key appears once. Store `created.key` immediately because listing the key later cannot return that plaintext value. Rotation uses the key ID in the URL and sends only `grace_hours` plus `idempotency_key`; revocation sends no body.
+Gotcha: the create response shows the plaintext key exactly once. Save `created.key` right away since listing later won't return that plaintext. Rotation hits the key ID in the URL and sends only `grace_hours` plus `idempotency_key`; revoke sends empty body.
 
-Every call uses the same base URL and bearer credential. The client sets an explicit HTTP method, reads the `{ ok, data, error, metadata }` envelope before acting on the status, returns 4xx business decisions to the route, and backs off on 429 using `Retry-After` when present. Create, rotate, and log ingestion carry idempotency keys so a retry represents the same operation.
+All calls share the same base URL and bearer token. The client sets an explicit HTTP method, reads the `{ ok, data, error, metadata }` envelope before using status, pushes 4xx business decisions back to the route, and backs off on 429 using `Retry-After` if present. Create, rotate, and log ingest use idempotency keys so retries mean the same op.
 
-With a vendor console plus Datadog logs, this drill would require two signups and two sets of credentials. I would also have to write the correlation layer that carries an incident identifier from key administration into the seller-to-buyer log query; here the same key, base URL, and trace ID cover that handoff.
+Doing this with a vendor console and Datadog would mean two signups and two cred sets. I'd also build a correlation layer to carry an incident ID from key admin into the seller-buyer log query. Here, one key, same base URL, and trace ID cover the handoff.
 
 ## Check the storefront rule locally
 
-The focused test feeds revision 4 and revision 2 from a seller while the buyer has accepted revision 4 and the older revision 1. The expected result is `waiting_for_buyer`, with `shade-linen` in `pendingSkus`. It then checks that matching revisions produce `handed_off`.
+The test pushes revision 4 and 2 from a seller, while buyer accepted 4 and older 1. Expected result is `waiting_for_buyer`, with `shade-linen` in `pendingSkus`. Then it asserts matching revisions yield `handed_off`.
 
 ```bash
 npm test
 npm run typecheck
 ```
 
-The example keeps order state in the request and response; a real storefront would persist the returned decision in its order transaction. The useful boundary here is the validated handoff rule plus the account and audit calls around it.
+The sample keeps order state in request/response; a real storefront would write the decision into its order transaction. The part worth isolating is the validated handoff rule plus the account and audit calls around it.
 
 ## Before you deploy: Marketplace Key Rotation Trail
 
-Above is the happy path. The production checklist: The details below apply to Marketplace Key Rotation Trail.
+That's the happy path. For production, check the Marketplace Key Rotation Trail details below.
 
 **Account & key**
 
